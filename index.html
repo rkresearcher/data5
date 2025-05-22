@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>GPS/INS Serial + Zoom + Source Display</title>
+<meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+<script src="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.js"></script>
+<link href="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.css" rel="stylesheet" />
+<style>
+  body, html { margin: 0; padding: 0; height: 100%; font-family: sans-serif; }
+  #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+
+  .zoom-controls {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    background: white;
+    border-radius: 4px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+    z-index: 2;
+  }
+  .zoom-controls button {
+    display: block;
+    border: none;
+    background: none;
+    width: 32px;
+    height: 32px;
+    font-size: 20px;
+    cursor: pointer;
+    outline: none;
+  }
+  .zoom-controls button:hover {
+    background-color: #eee;
+  }
+
+  #connect-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 2;
+    padding: 8px 16px;
+    font-size: 16px;
+    cursor: pointer;
+  }
+
+  #status {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    background: rgba(255,255,255,0.9);
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 16px;
+    z-index: 2;
+    min-width: 220px;
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<!-- Zoom buttons -->
+<div class="zoom-controls">
+  <button id="zoom-in" title="Zoom In">+</button>
+  <button id="zoom-out" title="Zoom Out">−</button>
+</div>
+
+<!-- Serial connect button -->
+<button id="connect-btn">Connect Serial</button>
+
+<!-- Status display -->
+<div id="status">Waiting for data...</div>
+
+<script>
+  const map = new maplibregl.Map({
+    container: 'map',
+    style: 'http://localhost:8080/styles/basic-preview/style.json',
+    center: [32.068, 34.8342],
+    zoom: 12
+  });
+
+  const marker = new maplibregl.Marker()
+    .setLngLat([77.2090, 28.6139])
+    .addTo(map);
+
+  const status = document.getElementById('status');
+
+  // Zoom controls
+  document.getElementById('zoom-in').addEventListener('click', () => {
+    map.zoomIn();
+  });
+  document.getElementById('zoom-out').addEventListener('click', () => {
+    map.zoomOut();
+  });
+
+  // Serial connection & parsing
+  document.getElementById('connect-btn').addEventListener('click', async () => {
+    if (!("serial" in navigator)) {
+      alert("Web Serial API not supported in this browser.");
+      return;
+    }
+
+    try {
+      const port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 115200 });
+
+      const decoder = new TextDecoderStream();
+      port.readable.pipeTo(decoder.writable);
+      const reader = decoder.readable.getReader();
+
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          reader.releaseLock();
+          break;
+        }
+        if (value) {
+          buffer += value;
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // last incomplete line
+
+          for (const lineRaw of lines) {
+            const line = lineRaw.trim();
+
+            // Check for "INS:" or "GPS:" prefix
+            if (line.startsWith('INS:') || line.startsWith('GPS:')) {
+              // Extract source and coords
+              const [sourcePart, coordPart] = line.split(':');
+              if (!coordPart) continue;
+
+              const coords = coordPart.trim().split(',');
+              if (coords.length !== 2) continue;
+
+              const lat = parseFloat(coords[0]);
+              const lon = parseFloat(coords[1]);
+
+              if (!isNaN(lat) && !isNaN(lon)) {
+                // Update marker and map
+                marker.setLngLat([lon, lat]);
+                map.easeTo({ center: [lon, lat], zoom: 14 });
+
+                // Update status text with source and coords
+                status.textContent = `${sourcePart.trim()} — Lat: ${lat.toFixed(6)}, Lon: ${lon.toFixed(6)}`;
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Serial error:', err);
+      alert('Error opening serial port: ' + err);
+    }
+  });
+</script>
+</body>
+</html>
+
